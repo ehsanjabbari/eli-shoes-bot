@@ -1,6 +1,7 @@
 const token = process.env.TELEGRAM_TOKEN;
 const wcKey = process.env.WC_KEY;
 const wcSecret = process.env.WC_SECRET;
+const adminChatId = process.env.ADMIN_CHAT_ID; // خواندن شناسه ادمین از تنظیمات
 const wcUrl = 'https://elishoes.ir';
 
 exports.handler = async (event) => {
@@ -10,6 +11,27 @@ exports.handler = async (event) => {
 
     const auth = Buffer.from(wcKey + ':' + wcSecret).toString('base64');
     const wcHeaders = { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/json' };
+
+    // ==========================================
+    // قفل امنیتی: استخراج شناسه فرستنده و بررسی مجوز
+    // ==========================================
+    let chatId;
+    if (update.message) chatId = update.message.chat.id;
+    else if (update.callback_query) chatId = update.callback_query.message.chat.id;
+
+    if (chatId && chatId.toString() !== adminChatId) {
+       // ارسال پیام اخطار به شخص غیرمجاز (اختیاری)
+       await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+         method: 'POST', 
+         headers: { 'Content-Type': 'application/json' }, 
+         body: JSON.stringify({ 
+           chat_id: chatId, 
+           text: '⛔ دسترسی غیرمجاز. شما مجوز استفاده از این ربات فروشگاهی را ندارید.' 
+         })
+       });
+       // متوقف کردن اجرای کدهای بعدی
+       return { statusCode: 200, body: 'Unauthorized' };
+    }
 
     // توابع کمکی ارسال و ویرایش پیام
     const sendMessage = async (chatId, text, replyMarkup = null) => {
@@ -34,15 +56,12 @@ exports.handler = async (event) => {
     if (update.callback_query) {
       const cb = update.callback_query;
       const data = cb.data;
-      const chatId = cb.message.chat.id;
       const msgId = cb.message.message_id;
 
-      // قطع کردن حالت لودینگ دکمه تلگرام
       fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_query_id: cb.id })
       }).catch(() => {});
 
-      // الف) صفحه‌بندی و لیست محصولات
       if (data.startsWith('page_') || data === 'menu_products') {
         const page = data.startsWith('page_') ? parseInt(data.split('_')[1]) : 1;
         await editMessage(chatId, msgId, `در حال دریافت لیست محصولات (صفحه ${page})... ⏳`);
@@ -68,17 +87,14 @@ exports.handler = async (event) => {
         await editMessage(chatId, msgId, `📦 <b>لیست محصولات فروشگاه</b> (صفحه ${page})\nبرای مشاهده ویژگی‌ها روی یک محصول ضربه بزنید:`, { inline_keyboard: keyboard });
       }
 
-      // ب) باز کردن یک محصول و استخراج رنگ‌ها
       else if (data.startsWith('prod_')) {
         const pid = data.split('_')[1];
         await editMessage(chatId, msgId, `در حال دریافت اطلاعات محصول... ⏳`);
 
-        // دریافت تا ۱۰۰ متغیر برای اطمینان از جا نماندن سایزها
         const res = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}/variations?per_page=100`, { headers: wcHeaders });
         const variations = await res.json();
 
         if (!variations || variations.length === 0) {
-           // اگر محصول ساده است (بدون سایز و رنگ) مستقیماً ۳ دکمه عملیات را نشان بده
            let keyboard = [
              [{ text: '📥 ثبت ورودی', callback_data: `act_IN_${pid}_0` }],
              [{ text: '🛍 ثبت فروش حضوری', callback_data: `act_OUT1_${pid}_0` }],
@@ -87,7 +103,6 @@ exports.handler = async (event) => {
            ];
            await editMessage(chatId, msgId, `⚙️ <b>عملیات مورد نظر برای این محصول ساده را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
         } else {
-           // استخراج رنگ‌های یکتا (با فرض اینکه ویژگی اول رنگ است)
            const colors = [...new Set(variations.map(v => v.attributes[0]?.option).filter(Boolean))];
            let keyboard = [];
            colors.forEach(color => {
@@ -99,7 +114,6 @@ exports.handler = async (event) => {
         }
       }
 
-      // پ) باز کردن یک رنگ و نمایش سایزها همراه با موجودی
       else if (data.startsWith('color_')) {
         const parts = data.split('_');
         const pid = parts[1];
@@ -110,7 +124,6 @@ exports.handler = async (event) => {
         const res = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}/variations?per_page=100`, { headers: wcHeaders });
         const variations = await res.json();
 
-        // جدا کردن سایزهایی که فقط متعلق به رنگ انتخاب شده هستند
         const colorVariations = variations.filter(v => v.attributes.some(a => a.option === selectedColor));
 
         let keyboard = [];
@@ -129,19 +142,17 @@ exports.handler = async (event) => {
         await editMessage(chatId, msgId, `📏 <b>لیست سایزها برای رنگ "${selectedColor}"</b>\n\nبرای ثبت عملیات، روی یکی از سایزهای زیر ضربه بزنید:`, { inline_keyboard: keyboard });
       }
 
-      // ت) کلیک روی سایز و نمایش ۳ دکمه طلایی شما
       else if (data.startsWith('size_')) {
         const [, pid, vid] = data.split('_');
         let keyboard = [
           [{ text: '📥 ثبت ورودی', callback_data: `act_IN_${pid}_${vid}` }],
           [{ text: '🛍 ثبت فروش حضوری', callback_data: `act_OUT1_${pid}_${vid}` }],
           [{ text: '🌐 ثبت فروش سایت دوم', callback_data: `act_OUT2_${pid}_${vid}` }],
-          [{ text: '🔙 بازگشت به لیست سایزها', callback_data: `prod_${pid}` }] // برگرداندن به مرحله رنگ‌ها
+          [{ text: '🔙 بازگشت به لیست سایزها', callback_data: `prod_${pid}` }] 
         ];
         await editMessage(chatId, msgId, `⚙️ <b>نوع عملیات را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
       }
 
-      // ث) کلیک روی یکی از عملیات‌ها (ارسال پیام برای گرفتن عدد)
       else if (data.startsWith('act_')) {
         const [, action, pid, vid] = data.split('_');
         let actionText = action === 'IN' 
@@ -150,7 +161,6 @@ exports.handler = async (event) => {
 
         const body = {
           chat_id: chatId,
-          // تگ مخفی برای اینکه ربات بداند این پیام مربوط به کدام محصول است
           text: `${actionText}\n\n[کد سیستم: #${action}_${pid}_${vid}]\n\n⚠️ لطفاً تعداد مدنظر را فقط به صورت عدد در پاسخ به همین پیام بفرستید.`,
           reply_markup: { force_reply: true, selective: true }
         };
@@ -163,23 +173,18 @@ exports.handler = async (event) => {
     }
 
     // ==========================================
-    // ۲. پردازش پیام‌های متنی (استارت، دریافت عدد، جستجو)
+    // ۲. پردازش پیام‌های متنی
     // ==========================================
     if (update.message && update.message.text) {
       const text = update.message.text;
-      const chatId = update.message.chat.id;
 
-      // الف) دستور استارت
       if (text === '/start') {
         const keyboard = { inline_keyboard: [ [{ text: '🛍 نمایش لیست تمام محصولات', callback_data: 'menu_products' }] ] };
-        await sendMessage(chatId, 'سلام! به پنل مدیریت موجودی الی شوز خوش آمدید.\nبرای جستجو نام محصول را بنویسید یا روی دکمه زیر ضربه بزنید:', keyboard);
+        await sendMessage(chatId, 'سلام ادمین عزیز! پنل مدیریت موجودی سایت فعال است.\nبرای جستجو نام محصول را بنویسید یا روی دکمه زیر ضربه بزنید:', keyboard);
       }
       
-      // ب) دریافت عدد موجودی از کاربر (از طریق ریپلای اجباری)
       else if (update.message.reply_to_message && update.message.reply_to_message.text) {
         const repliedText = update.message.reply_to_message.text;
-
-        // تبدیل اعداد فارسی (کیبورد گوشی) به انگلیسی
         const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
         const enText = text.replace(/[۰-۹]/g, w => persianDigits.indexOf(w));
         const amount = parseInt(enText);
@@ -199,7 +204,6 @@ exports.handler = async (event) => {
               ? `${wcUrl}/wp-json/wc/v3/products/${pid}`
               : `${wcUrl}/wp-json/wc/v3/products/${pid}/variations/${vid}`;
 
-          // ۱. دریافت موجودی فعلی
           const resGet = await fetch(endpoint, { headers: wcHeaders });
           const itemData = await resGet.json();
 
@@ -207,7 +211,6 @@ exports.handler = async (event) => {
           let newStock = currentStock;
           let actName = "";
 
-          // ۲. محاسبه موجودی جدید
           if (action === 'IN') {
               newStock = currentStock + amount;
               actName = "📥 ثبت ورودی (اضافه شد)";
@@ -219,7 +222,6 @@ exports.handler = async (event) => {
               actName = "🌐 فروش سایت دوم (کسر شد)";
           }
 
-          // ۳. ثبت موجودی جدید در ووکامرس
           const resPut = await fetch(endpoint, {
               method: 'PUT', headers: wcHeaders,
               body: JSON.stringify({ manage_stock: true, stock_quantity: newStock })
@@ -234,7 +236,6 @@ exports.handler = async (event) => {
         }
       }
       
-      // پ) جستجوی نام محصول (اگر پیام متنی نه استارت باشد و نه ریپلای)
       else if (!update.message.reply_to_message) {
         await sendMessage(chatId, `در حال جستجوی "${text}" ... ⏳`);
         const res = await fetch(`${wcUrl}/wp-json/wc/v3/products?search=${encodeURIComponent(text)}&status=publish`, { headers: wcHeaders });
