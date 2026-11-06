@@ -1,28 +1,37 @@
-const telegramBotPackage = require('node-telegram-bot-api');
-const TelegramBot = telegramBotPackage.default || telegramBotPackage;
 const token = process.env.TELEGRAM_TOKEN;
-const bot = new TelegramBot(token);
 
 exports.handler = async (event) => {
-  console.log("=== ۱. پیام جدید از تلگرام رسید ===");
+  console.log("=== ۱. پیام جدید رسید ===");
   try {
-    if (!event.body) {
-       console.log("خطا: پیام خالی است.");
-       return { statusCode: 200, body: 'Empty' };
-    }
+    if (!event.body) return { statusCode: 200, body: 'Empty' };
     
     const update = JSON.parse(event.body);
-    console.log("=== ۲. محتوای پیام: ===", update.message ? update.message.text : "بدون متن");
+    const chatId = update.message?.chat?.id;
+    const text = update.message?.text;
     
-    if (update.message && update.message.text === '/start') {
-      console.log("=== ۳. در حال ارسال جواب به تلگرام... ===");
-      await bot.sendMessage(update.message.chat.id, 'سلام! مشکل سرور برطرف شد. آماده اتصال به ووکامرس هستیم.');
-      console.log("=== ۴. جواب با موفقیت ارسال شد! ===");
+    console.log("=== ۲. متن پیام: ===", text);
+
+    // اگر کاربر پیام استارت را فرستاد
+    if (text === '/start' && chatId) {
+      console.log("=== ۳. در حال ارسال جواب با روش مستقیم... ===");
+      
+      // ارسال پیام مستقیماً از طریق API اصلی تلگرام
+      const url = `https://api.telegram.org/bot${token}/sendMessage`;
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: 'سلام! سد سرور شکسته شد. ارتباط مستقیم و بدون پکیج برقرار است. آماده اتصال به سایت!'
+        })
+      });
+      
+      console.log("=== ۴. جواب با موفقیت ارسال شد ===");
     }
     
     return { statusCode: 200, body: 'OK' };
   } catch (error) {
-    console.error('=== ۵. ارور سرور: ===', error.message || error);
+    console.error('=== ۵. خطا: ===', error.message);
     return { statusCode: 500, body: 'Error' };
   }
 };
