@@ -9,9 +9,9 @@ exports.handler = async (event) => {
     const update = JSON.parse(event.body);
 
     const auth = Buffer.from(wcKey + ':' + wcSecret).toString('base64');
-    const headers = { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/json' };
+    const wcHeaders = { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/json' };
 
-    // --- توابع کمکی برای ارسال و ویرایش پیام تلگرام ---
+    // توابع کمکی ارسال و ویرایش پیام
     const sendMessage = async (chatId, text, replyMarkup = null) => {
       const body = { chat_id: chatId, text: text, parse_mode: 'HTML' };
       if (replyMarkup) body.reply_markup = replyMarkup;
@@ -29,7 +29,7 @@ exports.handler = async (event) => {
     };
 
     // ==========================================
-    // ۱. پردازش کلیک روی دکمه‌های شیشه‌ای (Callback Queries)
+    // ۱. پردازش کلیک روی دکمه‌های شیشه‌ای
     // ==========================================
     if (update.callback_query) {
       const cb = update.callback_query;
@@ -37,16 +37,21 @@ exports.handler = async (event) => {
       const chatId = cb.message.chat.id;
       const msgId = cb.message.message_id;
 
-      // کلیک روی دکمه "نمایش محصولات" یا "صفحه‌بندی"
+      // قطع کردن حالت لودینگ دکمه تلگرام
+      fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_query_id: cb.id })
+      }).catch(() => {});
+
+      // الف) صفحه‌بندی و لیست محصولات
       if (data.startsWith('page_') || data === 'menu_products') {
         const page = data.startsWith('page_') ? parseInt(data.split('_')[1]) : 1;
         await editMessage(chatId, msgId, `در حال دریافت لیست محصولات (صفحه ${page})... ⏳`);
-        
-        const res = await fetch(`${wcUrl}/wp-json/wc/v3/products?per_page=10&page=${page}&status=publish`, { headers });
+
+        const res = await fetch(`${wcUrl}/wp-json/wc/v3/products?per_page=10&page=${page}&status=publish`, { headers: wcHeaders });
         const products = await res.json();
-        
+
         if (!products || products.length === 0) {
-          await editMessage(chatId, msgId, 'محصولی یافت نشد.');
+          await editMessage(chatId, msgId, 'محصول دیگری یافت نشد.', { inline_keyboard: [[{ text: '🔙 بازگشت', callback_data: `page_${page-1}` }]] });
           return { statusCode: 200, body: 'OK' };
         }
 
@@ -55,132 +60,198 @@ exports.handler = async (event) => {
           keyboard.push([{ text: `👞 ${p.name}`, callback_data: `prod_${p.id}` }]);
         });
 
-        // دکمه‌های صفحه‌بندی
         let navRow = [];
         if (page > 1) navRow.push({ text: '◀️ قبلی', callback_data: `page_${page - 1}` });
         navRow.push({ text: '▶️ بعدی', callback_data: `page_${page + 1}` });
         keyboard.push(navRow);
-        
-        await editMessage(chatId, msgId, `📦 <b>لیست محصولات فروشگاه</b> (صفحه ${page})\nیک محصول را برای مشاهده رنگ‌بندی انتخاب کنید:`, { inline_keyboard: keyboard });
+
+        await editMessage(chatId, msgId, `📦 <b>لیست محصولات فروشگاه</b> (صفحه ${page})\nبرای مشاهده ویژگی‌ها روی یک محصول ضربه بزنید:`, { inline_keyboard: keyboard });
       }
-      
-      // کلیک روی یک محصول خاص -> نمایش رنگ‌ها
+
+      // ب) باز کردن یک محصول و استخراج رنگ‌ها
       else if (data.startsWith('prod_')) {
         const pid = data.split('_')[1];
-        await editMessage(chatId, msgId, `در حال دریافت اطلاعات رنگ‌بندی... ⏳`);
-        
-        const res = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}/variations`, { headers });
+        await editMessage(chatId, msgId, `در حال دریافت اطلاعات محصول... ⏳`);
+
+        // دریافت تا ۱۰۰ متغیر برای اطمینان از جا نماندن سایزها
+        const res = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}/variations?per_page=100`, { headers: wcHeaders });
         const variations = await res.json();
-        
+
         if (!variations || variations.length === 0) {
-           await editMessage(chatId, msgId, `این محصول ساده است (رنگ و سایز ندارد).\n\nبرای تغییر موجودی آن این دستور را بفرستید:\n<code>/set ${pid} [تعداد]</code>`);
-           return { statusCode: 200, body: 'OK' };
+           // اگر محصول ساده است (بدون سایز و رنگ) مستقیماً ۳ دکمه عملیات را نشان بده
+           let keyboard = [
+             [{ text: '📥 ثبت ورودی', callback_data: `act_IN_${pid}_0` }],
+             [{ text: '🛍 ثبت فروش حضوری', callback_data: `act_OUT1_${pid}_0` }],
+             [{ text: '🌐 ثبت فروش سایت دوم', callback_data: `act_OUT2_${pid}_0` }],
+             [{ text: '🔙 بازگشت به لیست محصولات', callback_data: `page_1` }]
+           ];
+           await editMessage(chatId, msgId, `⚙️ <b>عملیات مورد نظر برای این محصول ساده را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
+        } else {
+           // استخراج رنگ‌های یکتا (با فرض اینکه ویژگی اول رنگ است)
+           const colors = [...new Set(variations.map(v => v.attributes[0]?.option).filter(Boolean))];
+           let keyboard = [];
+           colors.forEach(color => {
+             keyboard.push([{ text: `🎨 رنگ: ${color}`, callback_data: `color_${pid}_${color}` }]);
+           });
+           keyboard.push([{ text: '🔙 بازگشت به لیست محصولات', callback_data: `page_1` }]);
+
+           await editMessage(chatId, msgId, `🎨 <b>رنگ مورد نظر خود را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
         }
-
-        // استخراج رنگ‌های یکتا (با فرض اینکه ویژگی اول رنگ است)
-        const colors = [...new Set(variations.map(v => v.attributes[0]?.option).filter(Boolean))];
-        let keyboard = [];
-        colors.forEach(color => {
-          // ارسال شناسه محصول و نام رنگ به مرحله بعد
-          keyboard.push([{ text: `🎨 رنگ: ${color}`, callback_data: `color_${pid}_${color}` }]);
-        });
-        keyboard.push([{ text: '🔙 بازگشت به لیست محصولات', callback_data: `page_1` }]);
-
-        await editMessage(chatId, msgId, `🎨 <b>رنگ مورد نظر خود را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
       }
 
-      // کلیک روی یک رنگ خاص -> نمایش سایزها و موجودی داخل دکمه
+      // پ) باز کردن یک رنگ و نمایش سایزها همراه با موجودی
       else if (data.startsWith('color_')) {
         const parts = data.split('_');
         const pid = parts[1];
-        const selectedColor = parts.slice(2).join('_'); // اتصال مجدد در صورت وجود خط تیره در نام رنگ
-        
+        const selectedColor = parts.slice(2).join('_');
+
         await editMessage(chatId, msgId, `در حال دریافت سایزها و موجودی... ⏳`);
-        
-        const res = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}/variations`, { headers });
+
+        const res = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}/variations?per_page=100`, { headers: wcHeaders });
         const variations = await res.json();
-        
-        // فیلتر کردن متغیرهایی که رنگ انتخاب شده را دارند
+
+        // جدا کردن سایزهایی که فقط متعلق به رنگ انتخاب شده هستند
         const colorVariations = variations.filter(v => v.attributes.some(a => a.option === selectedColor));
-        
+
         let keyboard = [];
         colorVariations.forEach(v => {
-          // استخراج نام سایز (معمولاً ویژگی دوم است)
           const sizeAttr = v.attributes.find(a => a.option !== selectedColor);
           const sizeName = sizeAttr ? sizeAttr.option : 'بدون سایز';
           const stock = v.manage_stock ? (v.stock_quantity || 0) : 'بدون مدیریت';
-          
-          // متن داخل دکمه: سایز 38 | موجودی: 5
-          keyboard.push([{ 
-            text: `📏 سایز: ${sizeName} | 📦 موجودی: ${stock}`, 
-            callback_data: `size_${pid}_${v.id}` 
+
+          keyboard.push([{
+            text: `📏 سایز: ${sizeName} | 📦 موجودی: ${stock}`,
+            callback_data: `size_${pid}_${v.id}`
           }]);
         });
-        
-        keyboard.push([{ text: '🔙 بازگشت به انتخاب رنگ', callback_data: `prod_${pid}` }]);
+        keyboard.push([{ text: '🔙 انتخاب رنگ دیگر', callback_data: `prod_${pid}` }]);
 
-        await editMessage(chatId, msgId, `📏 <b>لیست سایزها و موجودی برای رنگ "${selectedColor}"</b>\n\nبرای تغییر موجودی، روی سایز مورد نظر ضربه بزنید:`, { inline_keyboard: keyboard });
+        await editMessage(chatId, msgId, `📏 <b>لیست سایزها برای رنگ "${selectedColor}"</b>\n\nبرای ثبت عملیات، روی یکی از سایزهای زیر ضربه بزنید:`, { inline_keyboard: keyboard });
       }
 
-      // کلیک روی یک سایز -> درخواست ارسال دستور ثبت موجودی
+      // ت) کلیک روی سایز و نمایش ۳ دکمه طلایی شما
       else if (data.startsWith('size_')) {
         const [, pid, vid] = data.split('_');
-        await sendMessage(chatId, `ثبت موجودی جدید:\n\nلطفاً پیام زیر را کپی کرده، تعداد جدید را به جای کلمه [تعداد] بنویسید و ارسال کنید:\n\n<code>/setvar ${pid} ${vid} [تعداد]</code>`);
+        let keyboard = [
+          [{ text: '📥 ثبت ورودی', callback_data: `act_IN_${pid}_${vid}` }],
+          [{ text: '🛍 ثبت فروش حضوری', callback_data: `act_OUT1_${pid}_${vid}` }],
+          [{ text: '🌐 ثبت فروش سایت دوم', callback_data: `act_OUT2_${pid}_${vid}` }],
+          [{ text: '🔙 بازگشت به لیست سایزها', callback_data: `prod_${pid}` }] // برگرداندن به مرحله رنگ‌ها
+        ];
+        await editMessage(chatId, msgId, `⚙️ <b>نوع عملیات را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
       }
-      
-      // پاسخ خودکار تلگرام برای جلوگیری از حالت لودینگ روی دکمه‌ها
-      await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_query_id: cb.id })
-      });
-      
+
+      // ث) کلیک روی یکی از عملیات‌ها (ارسال پیام برای گرفتن عدد)
+      else if (data.startsWith('act_')) {
+        const [, action, pid, vid] = data.split('_');
+        let actionText = action === 'IN' 
+          ? '📥 <b>ثبت ورودی:</b> چه تعدادی به موجودی اضافه شود؟' 
+          : '🛍 <b>کسر از موجودی:</b> چه تعدادی فروخته شد؟';
+
+        const body = {
+          chat_id: chatId,
+          // تگ مخفی برای اینکه ربات بداند این پیام مربوط به کدام محصول است
+          text: `${actionText}\n\n[کد سیستم: #${action}_${pid}_${vid}]\n\n⚠️ لطفاً تعداد مدنظر را فقط به صورت عدد در پاسخ به همین پیام بفرستید.`,
+          reply_markup: { force_reply: true, selective: true }
+        };
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+      }
+
       return { statusCode: 200, body: 'OK' };
     }
 
     // ==========================================
-    // ۲. پردازش پیام‌های متنی عادی
+    // ۲. پردازش پیام‌های متنی (استارت، دریافت عدد، جستجو)
     // ==========================================
     if (update.message && update.message.text) {
       const text = update.message.text;
       const chatId = update.message.chat.id;
 
+      // الف) دستور استارت
       if (text === '/start') {
-        const keyboard = {
-          inline_keyboard: [ [{ text: '🛍 نمایش لیست محصولات', callback_data: 'menu_products' }] ]
-        };
-        await sendMessage(chatId, 'سلام! به پنل مدیریت موجودی الی شوز خوش آمدید.\nبرای شروع روی دکمه زیر ضربه بزنید:', keyboard);
+        const keyboard = { inline_keyboard: [ [{ text: '🛍 نمایش لیست تمام محصولات', callback_data: 'menu_products' }] ] };
+        await sendMessage(chatId, 'سلام! به پنل مدیریت موجودی الی شوز خوش آمدید.\nبرای جستجو نام محصول را بنویسید یا روی دکمه زیر ضربه بزنید:', keyboard);
       }
       
-      // دستور ثبت موجودی متغیر (که کاربر بعد از کلیک روی سایز کپی می‌کند)
-      else if (text.startsWith('/setvar ')) {
-        const parts = text.split(' ');
-        if (parts.length === 4) {
-          const [ , pid, vid, newStock] = parts;
-          await sendMessage(chatId, `در حال ثبت موجودی (${newStock}) در دیتابیس... ⏳`);
-          
-          const res = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}/variations/${vid}`, {
-            method: 'PUT', headers, body: JSON.stringify({ manage_stock: true, stock_quantity: parseInt(newStock) })
+      // ب) دریافت عدد موجودی از کاربر (از طریق ریپلای اجباری)
+      else if (update.message.reply_to_message && update.message.reply_to_message.text) {
+        const repliedText = update.message.reply_to_message.text;
+
+        // تبدیل اعداد فارسی (کیبورد گوشی) به انگلیسی
+        const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
+        const enText = text.replace(/[۰-۹]/g, w => persianDigits.indexOf(w));
+        const amount = parseInt(enText);
+
+        const match = repliedText.match(/#(IN|OUT1|OUT2)_(\d+)_(\d+)/);
+        if (match) {
+          const [, action, pid, vid] = match;
+
+          if (isNaN(amount) || amount <= 0) {
+            await sendMessage(chatId, '❌ خطا: لطفاً یک عدد معتبر بزرگتر از صفر وارد کنید.');
+            return { statusCode: 200, body: 'OK' };
+          }
+
+          await sendMessage(chatId, 'در حال محاسبه و ثبت در سایت... ⏳');
+
+          const endpoint = vid === '0'
+              ? `${wcUrl}/wp-json/wc/v3/products/${pid}`
+              : `${wcUrl}/wp-json/wc/v3/products/${pid}/variations/${vid}`;
+
+          // ۱. دریافت موجودی فعلی
+          const resGet = await fetch(endpoint, { headers: wcHeaders });
+          const itemData = await resGet.json();
+
+          let currentStock = itemData.stock_quantity || 0;
+          let newStock = currentStock;
+          let actName = "";
+
+          // ۲. محاسبه موجودی جدید
+          if (action === 'IN') {
+              newStock = currentStock + amount;
+              actName = "📥 ثبت ورودی (اضافه شد)";
+          } else if (action === 'OUT1') {
+              newStock = currentStock - amount;
+              actName = "🛍 فروش حضوری (کسر شد)";
+          } else if (action === 'OUT2') {
+              newStock = currentStock - amount;
+              actName = "🌐 فروش سایت دوم (کسر شد)";
+          }
+
+          // ۳. ثبت موجودی جدید در ووکامرس
+          const resPut = await fetch(endpoint, {
+              method: 'PUT', headers: wcHeaders,
+              body: JSON.stringify({ manage_stock: true, stock_quantity: newStock })
           });
-          const result = await res.json();
-          if (result.id) await sendMessage(chatId, `✅ موجودی با موفقیت به ${result.stock_quantity} عدد بروزرسانی شد.\n\nبرای مشاهده مجدد محصولات، /start را بفرستید.`);
-          else await sendMessage(chatId, '❌ خطایی در ثبت موجودی رخ داد.');
+          const updatedData = await resPut.json();
+
+          if (updatedData.id) {
+              await sendMessage(chatId, `✅ <b>ثبت موفقیت‌آمیز بود!</b>\n\nعملیات: ${actName}\nتعداد تغییر یافته: ${amount}\n📦 <b>موجودی جدید: ${updatedData.stock_quantity}</b>`);
+          } else {
+              await sendMessage(chatId, '❌ خطا در ارتباط با سایت.');
+          }
         }
       }
       
-      // دستور ثبت موجودی محصول ساده
-      else if (text.startsWith('/set ')) {
-         const parts = text.split(' ');
-         if (parts.length === 3) {
-            const [ , pid, newStock] = parts;
-            await sendMessage(chatId, `در حال ثبت موجودی (${newStock})... ⏳`);
-            const res = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}`, {
-              method: 'PUT', headers, body: JSON.stringify({ manage_stock: true, stock_quantity: parseInt(newStock) })
-            });
-            const result = await res.json();
-            if (result.id) await sendMessage(chatId, `✅ موجودی به ${result.stock_quantity} عدد بروزرسانی شد.`);
-         }
+      // پ) جستجوی نام محصول (اگر پیام متنی نه استارت باشد و نه ریپلای)
+      else if (!update.message.reply_to_message) {
+        await sendMessage(chatId, `در حال جستجوی "${text}" ... ⏳`);
+        const res = await fetch(`${wcUrl}/wp-json/wc/v3/products?search=${encodeURIComponent(text)}&status=publish`, { headers: wcHeaders });
+        const products = await res.json();
+
+        if (!products || products.length === 0) {
+           await sendMessage(chatId, 'محصولی با این نام پیدا نشد 😔');
+        } else {
+           let keyboard = [];
+           products.forEach(p => {
+             keyboard.push([{ text: `👞 ${p.name}`, callback_data: `prod_${p.id}` }]);
+           });
+           await sendMessage(chatId, '✅ محصولات پیدا شده (برای انتخاب ضربه بزنید):', { inline_keyboard: keyboard });
+        }
       }
     }
-    
+
     return { statusCode: 200, body: 'OK' };
   } catch (error) {
     console.error('Error:', error);
