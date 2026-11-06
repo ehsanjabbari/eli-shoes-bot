@@ -51,11 +51,10 @@ exports.handler = async (event) => {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_query_id: cb.id })
       }).catch(() => {});
 
-      // ۱. نمایش سریع کل موجودی (ویژگی جدید)
+      // ۱. نمایش سریع کل موجودی به همراه قیمت
       if (data === 'quick_inventory') {
-        await editMessage(chatId, msgId, "در حال استخراج همزمان کل موجودی انبار از سایت... ⏳\n(این فرآیند ممکن است چند ثانیه زمان ببرد)");
+        await editMessage(chatId, msgId, "در حال استخراج همزمان موجودی و قیمت‌ها... ⏳\n(ممکن است چند ثانیه زمان ببرد)");
 
-        // دریافت ۵۰ محصول آخر سایت
         const res = await fetch(`${wcUrl}/wp-json/wc/v3/products?per_page=50&status=publish`, { headers: wcHeaders });
         const products = await res.json();
 
@@ -64,7 +63,6 @@ exports.handler = async (event) => {
           return { statusCode: 200, body: 'OK' };
         }
 
-        // دریافت موازی و بسیار سریع متغیرهای تمام محصولات
         const variableProducts = products.filter(p => p.type === 'variable');
         const variationPromises = variableProducts.map(p => 
           fetch(`${wcUrl}/wp-json/wc/v3/products/${p.id}/variations?per_page=100`, { headers: wcHeaders })
@@ -78,9 +76,17 @@ exports.handler = async (event) => {
         let reportChunks = ["📊 <b>گزارش سریع موجودی انبار الی شوز</b>\n\n"];
         let chunkIndex = 0;
 
-        // ساختاربندی متن خروجی دقیقاً مطابق فرمت درخواستی
         for (const p of products) {
           let itemText = `👞 <b>${p.name}</b>\n`;
+          
+          // اضافه کردن قیمت و قیمت ویژه در گزارش
+          let regPrice = p.regular_price || p.price;
+          if (regPrice) {
+            itemText += `💰 قیمت: ${parseInt(regPrice).toLocaleString('fa-IR')} تومان\n`;
+            if (p.sale_price) {
+              itemText += `🏷 قیمت ویژه: ${parseInt(p.sale_price).toLocaleString('fa-IR')} تومان\n`;
+            }
+          }
 
           if (p.type === 'simple') {
             const stock = p.manage_stock ? (p.stock_quantity || 0) : 'X';
@@ -105,7 +111,6 @@ exports.handler = async (event) => {
             itemText += `\n`;
           }
 
-          // شکستن پیام به بخش‌های کوچکتر در صورت طولانی شدن (جلوگیری از ارور تلگرام)
           if (reportChunks[chunkIndex].length + itemText.length > 3800) {
             chunkIndex++;
             reportChunks[chunkIndex] = "";
@@ -113,10 +118,8 @@ exports.handler = async (event) => {
           reportChunks[chunkIndex] += itemText;
         }
 
-        // ارسال بخش اول (جایگزین پیام لودینگ)
         await editMessage(chatId, msgId, reportChunks[0], { inline_keyboard: [[{ text: '🔙 بازگشت به منو', callback_data: `menu_main` }]] });
         
-        // ارسال بخش‌های بعدی به صورت پیام‌های جدید (در صورت وجود)
         for (let i = 1; i < reportChunks.length; i++) {
           await sendMessage(chatId, reportChunks[i]);
         }
@@ -126,11 +129,11 @@ exports.handler = async (event) => {
       else if (data === 'menu_main') {
         const keyboard = {
           inline_keyboard: [
-            [{ text: '🛍 مدیریت و ثبت موجودی محصولات', callback_data: 'menu_products' }],
+            [{ text: '🛍 مدیریت محصولات (موجودی و قیمت)', callback_data: 'menu_products' }],
             [{ text: '📊 نمایش سریع تمام موجودی‌ها', callback_data: 'quick_inventory' }]
           ]
         };
-        await editMessage(chatId, msgId, 'به پنل مدیریت موجودی الی شوز خوش آمدید.\nیکی از گزینه‌های زیر را انتخاب کنید:', keyboard);
+        await editMessage(chatId, msgId, 'به پنل مدیریت الی شوز خوش آمدید.\nیکی از گزینه‌های زیر را انتخاب کنید:', keyboard);
       }
 
       // ۲. صفحه‌بندی محصولات
@@ -157,10 +160,10 @@ exports.handler = async (event) => {
         keyboard.push(navRow);
         keyboard.push([{ text: '🔙 بازگشت به منوی اصلی', callback_data: `menu_main` }]);
 
-        await editMessage(chatId, msgId, `📦 <b>لیست محصولات فروشگاه</b> (صفحه ${page})\nبرای ثبت موجودی روی یک محصول ضربه بزنید:`, { inline_keyboard: keyboard });
+        await editMessage(chatId, msgId, `📦 <b>لیست محصولات فروشگاه</b> (صفحه ${page})\nبرای مدیریت روی یک محصول ضربه بزنید:`, { inline_keyboard: keyboard });
       }
 
-      // ۳. استخراج رنگ‌ها
+      // ۳. استخراج ویژگی‌ها و دکمه قیمت
       else if (data.startsWith('prod_')) {
         const pid = data.split('_')[1];
         await editMessage(chatId, msgId, `در حال دریافت اطلاعات محصول... ⏳`);
@@ -173,6 +176,7 @@ exports.handler = async (event) => {
              [{ text: '📥 ثبت ورودی', callback_data: `act_IN_${pid}_0` }],
              [{ text: '🛍 ثبت فروش حضوری', callback_data: `act_OUT1_${pid}_0` }],
              [{ text: '🌐 ثبت فروش سایت دوم', callback_data: `act_OUT2_${pid}_0` }],
+             [{ text: '💵 تغییر قیمت', callback_data: `act_PRICE_${pid}_0` }],
              [{ text: '🔙 بازگشت به لیست محصولات', callback_data: `page_1` }]
            ];
            await editMessage(chatId, msgId, `⚙️ <b>عملیات مورد نظر را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
@@ -182,9 +186,12 @@ exports.handler = async (event) => {
            colors.forEach(color => {
              keyboard.push([{ text: `🎨 رنگ: ${color}`, callback_data: `color_${pid}_${color}` }]);
            });
+           
+           // دکمه تغییر قیمت برای تمام ویژگی‌ها
+           keyboard.push([{ text: '💵 تغییر قیمت (تمامی رنگ‌ها و سایزها)', callback_data: `act_PRICE_${pid}_0` }]);
            keyboard.push([{ text: '🔙 بازگشت به لیست محصولات', callback_data: `page_1` }]);
 
-           await editMessage(chatId, msgId, `🎨 <b>رنگ مورد نظر خود را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
+           await editMessage(chatId, msgId, `🎨 <b>برای تغییر موجودی، رنگ را انتخاب کنید:</b>\n(یا با انتخاب دکمه تغییر قیمت، مبلغ کل محصول را آپدیت کنید)`, { inline_keyboard: keyboard });
         }
       }
 
@@ -211,10 +218,10 @@ exports.handler = async (event) => {
         });
         keyboard.push([{ text: '🔙 انتخاب رنگ دیگر', callback_data: `prod_${pid}` }]);
 
-        await editMessage(chatId, msgId, `📏 <b>لیست سایزها برای رنگ "${selectedColor}"</b>\n\nبرای ثبت عملیات، روی یکی از سایزهای زیر ضربه بزنید:`, { inline_keyboard: keyboard });
+        await editMessage(chatId, msgId, `📏 <b>لیست سایزها برای رنگ "${selectedColor}"</b>\n\nبرای ثبت عملیات موجودی، سایز را لمس کنید:`, { inline_keyboard: keyboard });
       }
 
-      // ۵. انتخاب عملیات برای متغیر
+      // ۵. انتخاب عملیات موجودی برای متغیر
       else if (data.startsWith('size_')) {
         const [, pid, vid] = data.split('_');
         let keyboard = [
@@ -226,14 +233,24 @@ exports.handler = async (event) => {
         await editMessage(chatId, msgId, `⚙️ <b>نوع عملیات را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
       }
 
-      // ۶. آماده‌سازی ریپلای اجباری
+      // ۶. آماده‌سازی ریپلای اجباری (موجودی و قیمت)
       else if (data.startsWith('act_')) {
         const [, action, pid, vid] = data.split('_');
-        let actionText = action === 'IN' ? '📥 <b>ثبت ورودی:</b> چه تعدادی به موجودی اضافه شود؟' : '🛍 <b>کسر از موجودی:</b> چه تعدادی فروخته شد؟';
+        
+        let actionText = "";
+        let isPrice = false;
+        
+        if (action === 'IN') actionText = '📥 <b>ثبت ورودی:</b> چه تعدادی به موجودی اضافه شود؟';
+        else if (action === 'OUT1') actionText = '🛍 <b>کسر از موجودی:</b> چه تعدادی فروخته شد؟';
+        else if (action === 'OUT2') actionText = '🌐 <b>کسر از موجودی:</b> چه تعدادی فروخته شد؟';
+        else if (action === 'PRICE') {
+           actionText = '💵 <b>تغییر قیمت کل محصول:</b>\nقیمت جدید محصول (به تومان) را ارسال کنید:';
+           isPrice = true;
+        }
 
         const body = {
           chat_id: chatId,
-          text: `${actionText}\n\n[کد سیستم: #${action}_${pid}_${vid}]\n\n⚠️ لطفاً تعداد مدنظر را فقط به صورت عدد در پاسخ به همین پیام بفرستید.`,
+          text: `${actionText}\n\n[کد سیستم: #${action}_${pid}_${vid}]\n\n⚠️ لطفاً ${isPrice ? 'مبلغ' : 'تعداد مدنظر'} را فقط به صورت عدد (انگلیسی یا فارسی) در پاسخ به همین پیام بفرستید.`,
           reply_markup: { force_reply: true, selective: true }
         };
         await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -243,38 +260,76 @@ exports.handler = async (event) => {
     }
 
     // ==========================================
-    // پردازش پیام‌های متنی
+    // پردازش پیام‌های متنی و ریپلای‌ها
     // ==========================================
     if (update.message && update.message.text) {
       const text = update.message.text;
 
-      // دستور استارت و منوی اصلی
+      // دستور استارت
       if (text === '/start') {
         const keyboard = {
           inline_keyboard: [
-            [{ text: '🛍 مدیریت و ثبت موجودی محصولات', callback_data: 'menu_products' }],
+            [{ text: '🛍 مدیریت محصولات (موجودی و قیمت)', callback_data: 'menu_products' }],
             [{ text: '📊 نمایش سریع تمام موجودی‌ها', callback_data: 'quick_inventory' }]
           ]
         };
-        await sendMessage(chatId, 'سلام ادمین عزیز! به پنل مدیریت موجودی الی شوز خوش آمدید.\nیکی از گزینه‌های زیر را انتخاب کنید:', keyboard);
+        await sendMessage(chatId, 'سلام ادمین عزیز! به پنل مدیریت الی شوز خوش آمدید.\nیکی از گزینه‌های زیر را انتخاب کنید:', keyboard);
       }
       
-      // پردازش عدد ارسال شده برای تغییر موجودی
+      // پردازش ورودی عددی (موجودی یا قیمت)
       else if (update.message.reply_to_message && update.message.reply_to_message.text) {
         const repliedText = update.message.reply_to_message.text;
+        
+        // تبدیل اعداد فارسی به انگلیسی و حذف کاما/ویرگول
         const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
-        const enText = text.replace(/[۰-۹]/g, w => persianDigits.indexOf(w));
+        const enText = text.replace(/[۰-۹]/g, w => persianDigits.indexOf(w)).replace(/,/g, '');
         const amount = parseInt(enText);
 
-        const match = repliedText.match(/#(IN|OUT1|OUT2)_(\d+)_(\d+)/);
+        const match = repliedText.match(/#(IN|OUT1|OUT2|PRICE)_(\d+)_(\d+)/);
         if (match) {
           const [, action, pid, vid] = match;
 
-          if (isNaN(amount) || amount <= 0) {
-            await sendMessage(chatId, '❌ خطا: لطفاً یک عدد معتبر بزرگتر از صفر وارد کنید.');
+          if (isNaN(amount) || amount < 0) {
+            await sendMessage(chatId, '❌ خطا: لطفاً یک عدد معتبر وارد کنید.');
             return { statusCode: 200, body: 'OK' };
           }
 
+          // پردازش تغییر قیمت
+          if (action === 'PRICE') {
+             await sendMessage(chatId, 'در حال ثبت قیمت جدید در سایت... ⏳\n(ممکن است چند ثانیه زمان ببرد)');
+             
+             const resVars = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}/variations?per_page=100`, { headers: wcHeaders });
+             const varsData = await resVars.json();
+
+             if (!varsData || varsData.length === 0 || varsData.code) {
+                 // محصول ساده
+                 const resPut = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}`, {
+                     method: 'PUT', headers: wcHeaders,
+                     body: JSON.stringify({ regular_price: amount.toString() })
+                 });
+                 const updated = await resPut.json();
+                 if (updated.id) await sendMessage(chatId, `✅ قیمت با موفقیت به ${amount.toLocaleString('fa-IR')} تومان تغییر یافت.`);
+                 else await sendMessage(chatId, '❌ خطا در بروزرسانی قیمت.');
+             } else {
+                 // محصول متغیر: تغییر همزمان قیمت تمام سایزها و رنگ‌ها
+                 fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}`, {
+                     method: 'PUT', headers: wcHeaders,
+                     body: JSON.stringify({ regular_price: amount.toString() })
+                 }).catch(()=> {});
+
+                 const updatePromises = varsData.map(v => 
+                     fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}/variations/${v.id}`, {
+                         method: 'PUT', headers: wcHeaders,
+                         body: JSON.stringify({ regular_price: amount.toString() })
+                     })
+                 );
+                 await Promise.all(updatePromises);
+                 await sendMessage(chatId, `✅ قیمت تمامی رنگ‌ها و سایزها با موفقیت به ${amount.toLocaleString('fa-IR')} تومان تغییر یافت.`);
+             }
+             return { statusCode: 200, body: 'OK' };
+          }
+
+          // پردازش تغییر موجودی (IN / OUT)
           await sendMessage(chatId, 'در حال محاسبه و ثبت در سایت... ⏳');
           const endpoint = vid === '0' ? `${wcUrl}/wp-json/wc/v3/products/${pid}` : `${wcUrl}/wp-json/wc/v3/products/${pid}/variations/${vid}`;
 
@@ -285,9 +340,23 @@ exports.handler = async (event) => {
           let newStock = currentStock;
           let actName = "";
 
-          if (action === 'IN') { newStock = currentStock + amount; actName = "📥 ثبت ورودی"; } 
-          else if (action === 'OUT1') { newStock = currentStock - amount; actName = "🛍 فروش حضوری"; } 
-          else if (action === 'OUT2') { newStock = currentStock - amount; actName = "🌐 فروش سایت دوم"; }
+          if (action === 'IN') { 
+              newStock = currentStock + amount; 
+              actName = "📥 ثبت ورودی"; 
+          } 
+          else if (action === 'OUT1') { 
+              newStock = currentStock - amount; 
+              actName = "🛍 فروش حضوری"; 
+          } 
+          else if (action === 'OUT2') { 
+              newStock = currentStock - amount; 
+              actName = "🌐 فروش سایت دوم"; 
+          }
+
+          if (newStock < 0) {
+              await sendMessage(chatId, `❌ خطا: موجودی کافی نیست!\nشما می‌خواهید ${amount} عدد کسر کنید در حالی که موجودی فعلی فقط ${currentStock} عدد است.`);
+              return { statusCode: 200, body: 'OK' };
+          }
 
           const resPut = await fetch(endpoint, { method: 'PUT', headers: wcHeaders, body: JSON.stringify({ manage_stock: true, stock_quantity: newStock }) });
           const updatedData = await resPut.json();
