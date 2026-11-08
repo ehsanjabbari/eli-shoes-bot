@@ -46,7 +46,6 @@ exports.handler = async (event) => {
 
       fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_query_id: cb.id }) }).catch(() => {});
 
-      // --- نمایش سوابق ---
       if (data === 'view_logs') {
         await editMessage(chatId, msgId, "در حال دریافت سوابق از گوگل شیت... ⏳");
         if (!sheetUrl) return { statusCode: 200, body: 'OK' };
@@ -61,7 +60,6 @@ exports.handler = async (event) => {
         }
       }
 
-      // --- منوی اصلی ---
       else if (data === 'menu_main') {
         const keyboard = {
           inline_keyboard: [
@@ -73,7 +71,6 @@ exports.handler = async (event) => {
         await editMessage(chatId, msgId, 'به پنل مدیریت الی شوز خوش آمدید.\nیکی از گزینه‌های زیر را انتخاب کنید:', keyboard);
       }
 
-      // --- نمایش سریع موجودی ---
       else if (data === 'quick_inventory') {
         await editMessage(chatId, msgId, "در حال استخراج همزمان موجودی و قیمت‌ها... ⏳");
         const res = await fetch(`${wcUrl}/wp-json/wc/v3/products?per_page=50&status=publish`, { headers: wcHeaders });
@@ -121,7 +118,6 @@ exports.handler = async (event) => {
         for (let i = 1; i < reportChunks.length; i++) await sendMessage(chatId, reportChunks[i]);
       }
 
-      // --- صفحه‌بندی محصولات ---
       else if (data.startsWith('page_') || data === 'menu_products') {
         const page = data.startsWith('page_') ? parseInt(data.split('_')[1]) : 1;
         await editMessage(chatId, msgId, `در حال دریافت محصولات (صفحه ${page})... ⏳`);
@@ -139,7 +135,6 @@ exports.handler = async (event) => {
         await editMessage(chatId, msgId, `📦 <b>محصولات فروشگاه</b> (صفحه ${page})`, { inline_keyboard: keyboard });
       }
 
-      // --- استخراج ویژگی‌ها (رنگ) ---
       else if (data.startsWith('prod_')) {
         const pid = data.split('_')[1];
         await editMessage(chatId, msgId, `در حال دریافت اطلاعات... ⏳`);
@@ -165,7 +160,6 @@ exports.handler = async (event) => {
         }
       }
 
-      // --- نمایش سایزها ---
       else if (data.startsWith('color_')) {
         const parts = data.split('_');
         const pid = parts[1];
@@ -186,7 +180,6 @@ exports.handler = async (event) => {
         await editMessage(chatId, msgId, `📏 <b>لیست سایزها</b>\nسایز را لمس کنید:`, { inline_keyboard: keyboard });
       }
 
-      // --- انتخاب عملیات (هدایت به تقویم) ---
       else if (data.startsWith('size_')) {
         const [, pid, vid] = data.split('_');
         let keyboard = [
@@ -198,15 +191,12 @@ exports.handler = async (event) => {
         await editMessage(chatId, msgId, `⚙️ <b>نوع عملیات را انتخاب کنید:</b>`, { inline_keyboard: keyboard });
       }
 
-      // --- سیستم تقویم شمسی درون‌برنامه‌ای ---
       else if (data.startsWith('cal_') || data.startsWith('act_')) {
         let action, pid, vid, offset;
         if (data.startsWith('act_')) {
           const parts = data.split('_');
           action = parts[1]; pid = parts[2]; vid = parts[3];
           offset = 0;
-          
-          // برای تغییر قیمت، نیازی به تقویم نیست
           if (action === 'PRICE') {
              const body = {
                chat_id: chatId,
@@ -225,11 +215,9 @@ exports.handler = async (event) => {
         const now = new Date();
         const startDayOffset = offset * 7;
         
-        // تولید دکمه‌های 7 روز بر اساس تاریخ تهران
         for (let i = 6; i >= 0; i--) {
           const d = new Date(now.getTime() - ((startDayOffset + i) * 24 * 60 * 60 * 1000));
           const dayStr = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', day: 'numeric' }).format(d);
-          // استخراج تاریخ کامل با خط تیره (برای حفظ محدودیت حجم دیتای تلگرام)
           const fullDateStr = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d).replace(/\//g, '-');
           daysRow.push({ text: dayStr, callback_data: `seld_${action}_${pid}_${vid}_${fullDateStr}` });
         }
@@ -246,14 +234,13 @@ exports.handler = async (event) => {
         await editMessage(chatId, msgId, text, { inline_keyboard: keyboard });
       }
 
-      // --- دریافت تاریخ انتخاب شده و آماده‌سازی ریپلای اجباری ---
       else if (data.startsWith('seld_')) {
         const parts = data.split('_');
         const action = parts[1], pid = parts[2], vid = parts[3];
-        const selDate = parts.slice(4).join('_'); // تاریخ انتخاب شده
+        const selDate = parts.slice(4).join('_');
         
         let actionText = "";
-        const formattedDate = selDate.replace(/-/g, '/'); // برگرداندن خط تیره به اسلش
+        const formattedDate = selDate.replace(/-/g, '/');
         
         if (action === 'IN') actionText = `📥 <b>ثبت ورودی:</b> تعداد؟\n📅 تاریخ عملیات: ${formattedDate}`;
         else if (action === 'OUT1') actionText = `🛍 <b>فروش حضوری:</b> تعداد؟\n📅 تاریخ عملیات: ${formattedDate}`;
@@ -261,7 +248,6 @@ exports.handler = async (event) => {
 
         const body = {
           chat_id: chatId,
-          // تاریخ در کد مخفی ذخیره می‌شود
           text: `${actionText}\n\n[کد: #${action}_${pid}_${vid}_${selDate}]\n\n⚠️ عدد موجودی را در پاسخ (Reply) به همین پیام بفرستید.`,
           reply_markup: { force_reply: true, selective: true }
         };
@@ -288,13 +274,11 @@ exports.handler = async (event) => {
         await sendMessage(chatId, 'سلام! به پنل مدیریت الی شوز خوش آمدید.', keyboard);
       }
       
-      // دریافت عدد از ریپلای
       else if (update.message.reply_to_message && update.message.reply_to_message.text) {
         const repliedText = update.message.reply_to_message.text;
         const enText = text.replace(/[۰-۹]/g, w => '۰۱۲۳۴۵۶۷۸۹'.indexOf(w)).replace(/,/g, '');
         const amount = parseInt(enText);
         
-        // استخراج کد عملیات، شناسه و تاریخ از پیام ریپلای شده
         const match = repliedText.match(/#(IN|OUT1|OUT2|PRICE)_(\d+)_(\d+)(?:_([^\]]+))?/);
 
         if (match) {
@@ -318,7 +302,6 @@ exports.handler = async (event) => {
              return { statusCode: 200, body: 'OK' };
           }
 
-          // محاسبه تغییر موجودی
           await sendMessage(chatId, 'در حال پردازش... ⏳');
           const endpoint = vid === '0' ? `${wcUrl}/wp-json/wc/v3/products/${pid}` : `${wcUrl}/wp-json/wc/v3/products/${pid}/variations/${vid}`;
           const resGet = await fetch(endpoint, { headers: wcHeaders });
@@ -343,17 +326,27 @@ exports.handler = async (event) => {
           if (updatedData.id) {
               await sendMessage(chatId, `✅ ثبت شد! موجودی جدید: ${updatedData.stock_quantity}`);
               
-              // --- ثبت لاگ در گوگل شیت با تاریخ دلخواه ---
+              // --- استخراج نام محصول مادر و ثبت لاگ در گوگل شیت ---
               if (sheetUrl) {
                 try {
-                  // استفاده از تاریخ انتخاب شده، یا تاریخ امروز اگر یافت نشد
                   const finalDate = selDateStr ? selDateStr.replace(/-/g, '/') : new Date().toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' });
                   const time = new Date().toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran' });
                   
-                  let productName = itemData.name || `محصول ${pid}`;
-                  if (itemData.attributes) {
+                  let productName = "";
+                  
+                  // دریافت نام محصول مادر در صورتی که این یک متغیر (Variation) است
+                  if (vid !== '0') {
+                     const parentRes = await fetch(`${wcUrl}/wp-json/wc/v3/products/${pid}`, { headers: wcHeaders });
+                     const parentData = await parentRes.json();
+                     productName = parentData.name || `محصول ${pid}`;
+                  } else {
+                     productName = itemData.name || `محصول ${pid}`;
+                  }
+
+                  // چسباندن ویژگی‌ها (رنگ و سایز) به نام محصول مادر
+                  if (itemData.attributes && itemData.attributes.length > 0) {
                     const attrs = itemData.attributes.map(a => a.option).join(' - ');
-                    if (attrs) productName += ` (${attrs})`;
+                    productName += ` (${attrs})`;
                   }
 
                   await fetch(sheetUrl, {
@@ -368,7 +361,6 @@ exports.handler = async (event) => {
         }
       }
       
-      // جستجو
       else if (!update.message.reply_to_message) {
         await sendMessage(chatId, `جستجوی "${text}" ... ⏳`);
         const res = await fetch(`${wcUrl}/wp-json/wc/v3/products?search=${encodeURIComponent(text)}&status=publish`, { headers: wcHeaders });
